@@ -2,7 +2,7 @@ fn main() {
     println!("Hello, world!");
 }
 
-mod bounded_set;
+pub mod bounded_set;
 
 #[cfg(test)]
 mod passive_view_spec {}
