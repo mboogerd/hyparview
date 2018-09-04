@@ -5,3 +5,5 @@ authors = ["Merlijn Boogerd <mboogerd@xebia.com>"]
 
 [dependencies]
 rand = "0.5.5"
+actix = "0.7.4"
+futures = "0.1.23"
