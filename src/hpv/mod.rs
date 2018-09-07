@@ -1,10 +1,13 @@
 extern crate actix;
+extern crate futures_channel;
+extern crate futures_core;
 
 use self::actix::prelude::*;
+use self::actix::Recipient;
 use bounded_set::BoundedSet;
 use std::collections::HashSet;
 use std::io;
-use std::sync::mpsc::channel;
+use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
@@ -35,13 +38,24 @@ impl Config {
     }
 }
 
-#[derive(Eq, PartialEq, Hash, Clone, Debug)]
-pub struct Peer {}
+// Dynamic address
+#[derive(Eq, PartialEq, Hash, Clone)]
+pub struct Peer {
+    recipient: Recipient<HpvMsg>,
+}
 
-pub struct Inspect;
+impl Message for Views {
+    type Result = Result<(), io::Error>;
+}
 
-impl Message for Inspect {
-    type Result = Result<Views, io::Error>;
+type ViewsRecipient = Recipient<Views>;
+
+pub enum HpvMsg {
+    Inspect(ViewsRecipient),
+}
+
+impl Message for HpvMsg {
+    type Result = Result<(), io::Error>;
 }
 
 pub struct HyParViewActor {
@@ -54,7 +68,7 @@ pub struct HyParViewActor {
 
 impl HyParViewActor {
     pub fn default() -> (Receiver<Peer>, HyParViewActor) {
-        let (tx, rx) = channel();
+        let (tx, rx) = mpsc::channel();
         let config = Config::default();
         let hpv = HyParViewActor {
             config: config.clone(),
@@ -84,7 +98,7 @@ impl HyParViewActor {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Eq, PartialEq)]
 pub struct Views {
     active_view: BoundedSet<Peer>,
     passive_view: BoundedSet<Peer>,
@@ -103,23 +117,22 @@ impl Actor for HyParViewActor {
     type Context = Context<Self>;
 }
 
-impl Handler<Inspect> for HyParViewActor {
-    type Result = Result<Views, io::Error>;
+impl Handler<HpvMsg> for HyParViewActor {
+    type Result = Result<(), io::Error>;
 
-    fn handle(&mut self, _msg: Inspect, _ctx: &mut Context<Self>) -> Self::Result {
-        println!("Received inspect");
-        Ok(Views::from_hyparview(self))
+    fn handle(&mut self, msg: HpvMsg, _ctx: &mut Context<Self>) -> Self::Result {
+        match msg {
+            HpvMsg::Inspect(v) => {
+                let result = v.do_send(Views::from_hyparview(self));
+                if result.is_err() {
+                    // TODO: Improve error logging
+                    println!("Inspection requested, but failed to forward current view!")
+                }
+            }
+        };
+        Ok(())
     }
 }
 
 #[cfg(test)]
-mod test_join;
-
-#[cfg(test)]
-mod test_passive_view;
-
-#[cfg(test)]
-mod test_active_view;
-
-#[cfg(test)]
-mod test_loquat;
+mod test;

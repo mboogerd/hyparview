@@ -2,8 +2,8 @@ pub struct Connection<T> {
     peer: Peer
 }
 
-pub trait Peer<T> {
-    fn send(payload: T)
+pub trait Peer<A: Actor> {
+    
 }
 
 pub trait Environment {
