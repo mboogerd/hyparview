@@ -86,6 +86,13 @@ impl<E: Eq + PartialEq + Hash> BoundedSet<E> {
             }
         }
     }
+
+    pub fn for_each<F>(&self, f: F)
+    where
+        F: FnMut(&E) -> (),
+    {
+        self.wraps.iter().for_each(f);
+    }
 }
 
 #[cfg(test)]

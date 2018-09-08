@@ -5,7 +5,11 @@ extern crate futures_core;
 use self::actix::prelude::*;
 use self::actix::Recipient;
 use bounded_set::BoundedSet;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
+use std::fmt;
+use std::fmt::Display;
+use std::hash::{Hash, Hasher};
 use std::io;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
@@ -41,7 +45,28 @@ impl Config {
 // Dynamic address
 #[derive(Eq, PartialEq, Hash, Clone)]
 pub struct Peer {
-    recipient: Recipient<HpvMsg>,
+    recipient: HpvRecipient,
+}
+
+impl Into<Peer> for HpvRecipient {
+    fn into(self) -> Peer {
+        Peer { recipient: self }
+    }
+}
+
+impl fmt::Debug for Peer {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut hasher = DefaultHasher::new();
+        self.recipient.hash(&mut hasher);
+        write!(f, "Peer {}", hasher.finish())
+    }
+}
+impl fmt::Display for Peer {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut hasher = DefaultHasher::new();
+        self.recipient.hash(&mut hasher);
+        write!(f, "Peer {}", hasher.finish())
+    }
 }
 
 impl Message for Views {
@@ -50,8 +75,23 @@ impl Message for Views {
 
 type ViewsRecipient = Recipient<Views>;
 
+type HpvRecipient = Recipient<HpvMsg>;
+
+#[derive(Eq, PartialEq)]
 pub enum HpvMsg {
     Inspect(ViewsRecipient),
+    InitiateJoin(Peer),
+    Join(Peer),
+}
+
+impl fmt::Debug for HpvMsg {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            HpvMsg::Inspect(_) => write!(f, "Inspect"),
+            HpvMsg::InitiateJoin(p) => write!(f, "InitiateJoin({})", p),
+            HpvMsg::Join(p) => write!(f, "Join({})", p),
+        }
+    }
 }
 
 impl Message for HpvMsg {
@@ -85,20 +125,32 @@ impl HyParViewActor {
         self.config = config;
     }
 
-    pub fn add_passive_view(&mut self, peers: HashSet<Peer>) {
+    pub fn add_passive_node(&mut self, p: Peer) -> &mut Self {
+        self.passive_view.insert(p);
+        self
+    }
+
+    pub fn add_active_node(&mut self, p: Peer) -> &mut Self {
+        self.active_view.insert(p);
+        self
+    }
+
+    pub fn add_passive_view(&mut self, peers: HashSet<Peer>) -> &mut Self {
         peers.iter().cloned().for_each(|p| {
             self.passive_view.insert(p);
         });
+        self
     }
 
-    pub fn add_active_view(&mut self, peers: HashSet<Peer>) {
+    pub fn add_active_view(&mut self, peers: HashSet<Peer>) -> &mut Self {
         peers.iter().cloned().for_each(|p| {
             self.active_view.insert(p);
         });
+        self
     }
 }
 
-#[derive(Eq, PartialEq)]
+#[derive(Eq, PartialEq, Debug)]
 pub struct Views {
     active_view: BoundedSet<Peer>,
     passive_view: BoundedSet<Peer>,
@@ -120,17 +172,50 @@ impl Actor for HyParViewActor {
 impl Handler<HpvMsg> for HyParViewActor {
     type Result = Result<(), io::Error>;
 
-    fn handle(&mut self, msg: HpvMsg, _ctx: &mut Context<Self>) -> Self::Result {
+    fn handle(&mut self, msg: HpvMsg, ctx: &mut Context<Self>) -> Self::Result {
         match msg {
-            HpvMsg::Inspect(v) => {
-                let result = v.do_send(Views::from_hyparview(self));
-                if result.is_err() {
-                    // TODO: Improve error logging
-                    println!("Inspection requested, but failed to forward current view!")
-                }
+            HpvMsg::Inspect(v) => self.handle_inspect(v),
+            HpvMsg::InitiateJoin(v) => {
+                self.handle_init_join(ctx.address().recipient(), v.recipient)
             }
+            HpvMsg::Join(v) => self.handle_join(v.recipient),
         };
+        // Satisfy actix contract
         Ok(())
+    }
+}
+
+impl HyParViewActor {
+    fn handle_inspect(&self, v: ViewsRecipient) {
+        v.do_send(Views::from_hyparview(self))
+            .log_error("Inspection requested, but failed to forward current view!");
+    }
+
+    fn handle_init_join(&mut self, self_recipient: HpvRecipient, bootstrap: HpvRecipient) {
+        bootstrap
+            .do_send(HpvMsg::Join(self_recipient.into()))
+            .log_error("Failed to dispatch Join request to bootstrap node");
+    }
+
+    fn handle_join(&mut self, new_peer: HpvRecipient) {
+        self.active_view.for_each(|p| {
+            p.recipient
+                .do_send(HpvMsg::Join(new_peer.clone().into()))
+                .log_error("Failed to forward join");
+        });
+    }
+}
+
+trait Logged {
+    fn log_error(&self, msg: &str);
+}
+
+impl<V, E: Display> Logged for Result<V, E> {
+    fn log_error(&self, msg: &str) {
+        match self {
+            Ok(_) => (),
+            Err(e) => println!("[Error] Description: '{}'. Cause: '{}'", msg, e),
+        }
     }
 }
 
