@@ -115,7 +115,7 @@ impl Handler<HpvMsg> for HyParViewActor {
             HpvMsg::NeighbourReply { peer, accepted } => {
                 self.handle_neighbour_reply(self_peer, peer, accepted)
             }
-            HpvMsg::Disconnect(p) => self.handle_disconnect(self_peer, p),
+            HpvMsg::Disconnect(p) => self.handle_disconnect(self_peer, &p),
         };
         // Satisfy actix contract
         Ok(())
@@ -188,9 +188,9 @@ impl HyParViewActor {
         }
     }
 
-    pub fn handle_disconnect(&mut self, self_peer: Peer, remove: Peer) {
-        if self.active_view.contains(&remove) {
-            self.active_view.remove(&remove);
+    pub fn handle_disconnect(&mut self, self_peer: Peer, remove: &Peer) {
+        if self.active_view.contains(remove) {
+            self.active_view.remove(remove);
         }
 
         match self.passive_view.sample_one().cloned() {
@@ -280,7 +280,12 @@ impl HyParViewActor {
         }
     }
 
-    pub fn handle_neighbour_reply(&mut self, self_peer: Peer, neighbour: Peer, accepted: bool) {}
+    pub fn handle_neighbour_reply(&mut self, self_peer: Peer, neighbour: Peer, accepted: bool) {
+        if !accepted {
+            self.handle_disconnect(self_peer, &neighbour);
+            self.passive_view.insert(neighbour);
+        }
+    }
 }
 
 #[cfg(test)]
