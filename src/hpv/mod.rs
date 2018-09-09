@@ -56,9 +56,7 @@ impl Into<Peer> for HpvRecipient {
 
 impl fmt::Debug for Peer {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let mut hasher = DefaultHasher::new();
-        self.recipient.hash(&mut hasher);
-        write!(f, "Peer {}", hasher.finish())
+        Display::fmt(&self, f)
     }
 }
 impl fmt::Display for Peer {
@@ -77,12 +75,16 @@ type ViewsRecipient = Recipient<Views>;
 
 type HpvRecipient = Recipient<HpvMsg>;
 
-#[derive(Eq, PartialEq)]
+#[derive(Eq, PartialEq, Clone)]
 pub enum HpvMsg {
     Inspect(ViewsRecipient),
     InitiateJoin(Peer),
     Join(Peer),
-    ForwardJoin(Peer),
+    ForwardJoin {
+        joining: Peer,
+        forwarder: Peer,
+        ttl: usize,
+    },
     Disconnect(Peer),
 }
 
@@ -92,7 +94,8 @@ impl fmt::Debug for HpvMsg {
             HpvMsg::Inspect(_) => write!(f, "Inspect"),
             HpvMsg::InitiateJoin(p) => write!(f, "InitiateJoin({})", p),
             HpvMsg::Join(p) => write!(f, "Join({})", p),
-            HpvMsg::ForwardJoin(p) => write!(f, "ForwardJoin({})", p),
+            // FIXME: Somehow cannot be destructured without a fmt macro error...?
+            HpvMsg::ForwardJoin { .. } => write!(f, "ForwardJoin()"),
             HpvMsg::Disconnect(p) => write!(f, "Disconnect({})", p),
         }
     }
@@ -196,7 +199,11 @@ impl Handler<HpvMsg> for HyParViewActor {
             HpvMsg::Inspect(v) => self.handle_inspect(v),
             HpvMsg::InitiateJoin(v) => self.handle_init_join(self_peer, v),
             HpvMsg::Join(p) => self.handle_join(self_peer, p),
-            HpvMsg::ForwardJoin(p) => self.handle_forward_join(p),
+            HpvMsg::ForwardJoin {
+                joining: p,
+                forwarder: f,
+                ttl,
+            } => self.handle_forward_join(self_peer, p, f, ttl),
             HpvMsg::Disconnect(p) => self.handle_disconnect(p),
         };
         // Satisfy actix contract
@@ -223,29 +230,60 @@ impl HyParViewActor {
         }
         self.active_view.for_each(|p| {
             p.recipient
-                .do_send(HpvMsg::ForwardJoin(new_peer.clone().into()))
+                .do_send(HpvMsg::ForwardJoin {
+                    joining: new_peer.clone(),
+                    forwarder: self_peer.clone(),
+                    ttl: self.config.active_rwl,
+                })
                 .log_error("Failed to forward join");
         });
         self.promote_peer(new_peer);
     }
 
-    fn handle_forward_join(&mut self, new_peer: Peer) {
-        self.active_view.for_each(|p| {
-            p.recipient
-                .do_send(HpvMsg::Join(new_peer.clone().into()))
-                .log_error("Failed to forward join");
-        });
+    fn handle_forward_join(
+        &mut self,
+        self_peer: Peer,
+        new_peer: Peer,
+        forwarder: Peer,
+        ttl: usize,
+    ) {
+        if ttl == 0 || self.active_view.len() == 0 {
+            self.add_node_to_active_view(self_peer, new_peer);
+        } else {
+            if ttl == self.config.passive_rwl {
+                self.add_node_to_passive_view(self_peer.clone(), new_peer.clone());
+            }
+
+            if ttl > 0 {
+                // set of candidates to foward excludes the one who forwarded
+                // TODO: Verify whether remove+insert is actually safe. A non-active node could have considered us active?
+                self.active_view.remove(&forwarder);
+                if self.active_view.len() > 0 {
+                    self.active_view.sample_one().iter().for_each(|p| {
+                        p.recipient
+                            .do_send(HpvMsg::ForwardJoin {
+                                joining: new_peer.clone(),
+                                forwarder: self_peer.clone(),
+                                ttl: ttl - 1,
+                            })
+                            .log_error("Failed to forward join to random peer");
+                    });
+                }
+                self.active_view.insert(forwarder);
+            }
+        }
     }
 
     fn handle_disconnect(&mut self, new_peer: Peer) {
         self.active_view.for_each(|p| {
             p.recipient
-                .do_send(HpvMsg::Join(new_peer.clone().into()))
+                .do_send(HpvMsg::Join(new_peer.clone()))
                 .log_error("Failed to forward join");
         });
     }
 
     fn drop_random_active_peer(&mut self, self_peer: &Peer) {
+        // FIXME: Shouldn't need clone???
         match self.active_view.sample_one().cloned() {
             Some(node) => {
                 node.recipient
@@ -260,9 +298,32 @@ impl HyParViewActor {
         }
     }
 
-    fn promote_peer(&mut self, self_peer: Peer) {
-        self.active_view.insert(self_peer);
+    fn promote_peer(&mut self, new_peer: Peer) {
+        self.active_view.insert(new_peer);
         // TODO: Connect to the peer / Start watching the peer for disconnect
+    }
+
+    fn add_node_to_active_view(&mut self, self_peer: Peer, new_peer: Peer) {
+        if new_peer != self_peer && !self.active_view.contains(&new_peer) {
+            if self.active_view.is_full() {
+                self.drop_random_active_peer(&self_peer);
+            }
+            self.promote_peer(new_peer);
+        }
+    }
+
+    fn add_node_to_passive_view(&mut self, self_peer: Peer, new_peer: Peer) {
+        if new_peer != self_peer && !self.active_view.contains(&new_peer)
+            && !self.passive_view.contains(&new_peer)
+        {
+            if self.passive_view.is_full() {
+                // This is safe for any view with positive capacity
+                // FIXME: Shouldn't need clone???
+                let remove = self.passive_view.sample_one().cloned().unwrap();
+                self.passive_view.remove(&remove);
+            }
+            self.passive_view.insert(new_peer);
+        }
     }
 }
 
