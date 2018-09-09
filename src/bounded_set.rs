@@ -1,6 +1,8 @@
 extern crate rand;
 
 use std::collections::HashSet;
+use std::fmt::Debug;
+use std::fmt::{Display, Error, Formatter};
 use std::hash::Hash;
 use std::mem;
 
@@ -29,6 +31,14 @@ impl<E: Eq + PartialEq + Hash> BoundedSet<E> {
         BoundedSet {
             capacity: capacity,
             wraps: wraps,
+        }
+    }
+
+    pub fn set_capacity(&mut self, new_capacity: usize) {
+        if self.wraps.len() <= new_capacity {
+            self.capacity = new_capacity;
+        } else {
+            panic!("New capacity exceeds current set size");
         }
     }
 
@@ -92,6 +102,12 @@ impl<E: Eq + PartialEq + Hash> BoundedSet<E> {
         F: FnMut(&E) -> (),
     {
         self.wraps.iter().for_each(f);
+    }
+}
+
+impl<E: Debug + Display + Eq + Hash> Display for BoundedSet<E> {
+    fn fmt(&self, fmt: &mut Formatter) -> Result<(), Error> {
+        Debug::fmt(self, fmt)
     }
 }
 

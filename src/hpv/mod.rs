@@ -82,6 +82,8 @@ pub enum HpvMsg {
     Inspect(ViewsRecipient),
     InitiateJoin(Peer),
     Join(Peer),
+    ForwardJoin(Peer),
+    Disconnect(Peer),
 }
 
 impl fmt::Debug for HpvMsg {
@@ -90,6 +92,8 @@ impl fmt::Debug for HpvMsg {
             HpvMsg::Inspect(_) => write!(f, "Inspect"),
             HpvMsg::InitiateJoin(p) => write!(f, "InitiateJoin({})", p),
             HpvMsg::Join(p) => write!(f, "Join({})", p),
+            HpvMsg::ForwardJoin(p) => write!(f, "ForwardJoin({})", p),
+            HpvMsg::Disconnect(p) => write!(f, "Disconnect({})", p),
         }
     }
 }
@@ -120,9 +124,16 @@ impl HyParViewActor {
     }
 
     pub fn set_config(&mut self, config: Config) {
-        assert!(config.max_active_view_size >= self.active_view.capacity);
-        assert!(config.max_passive_view_size >= self.passive_view.capacity);
         self.config = config;
+        self.apply_capacity_config();
+    }
+
+    pub fn change_config<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&mut Config) -> (),
+    {
+        f(&mut self.config);
+        self.apply_capacity_config();
     }
 
     pub fn add_passive_node(&mut self, p: Peer) -> &mut Self {
@@ -147,6 +158,13 @@ impl HyParViewActor {
             self.active_view.insert(p);
         });
         self
+    }
+
+    fn apply_capacity_config(&mut self) {
+        self.active_view
+            .set_capacity(self.config.max_active_view_size);
+        self.passive_view
+            .set_capacity(self.config.max_passive_view_size);
     }
 }
 
@@ -173,12 +191,13 @@ impl Handler<HpvMsg> for HyParViewActor {
     type Result = Result<(), io::Error>;
 
     fn handle(&mut self, msg: HpvMsg, ctx: &mut Context<Self>) -> Self::Result {
+        let self_peer: Peer = ctx.address().recipient().into();
         match msg {
             HpvMsg::Inspect(v) => self.handle_inspect(v),
-            HpvMsg::InitiateJoin(v) => {
-                self.handle_init_join(ctx.address().recipient(), v.recipient)
-            }
-            HpvMsg::Join(v) => self.handle_join(v.recipient),
+            HpvMsg::InitiateJoin(v) => self.handle_init_join(self_peer, v),
+            HpvMsg::Join(p) => self.handle_join(self_peer, p),
+            HpvMsg::ForwardJoin(p) => self.handle_forward_join(p),
+            HpvMsg::Disconnect(p) => self.handle_disconnect(p),
         };
         // Satisfy actix contract
         Ok(())
@@ -191,18 +210,59 @@ impl HyParViewActor {
             .log_error("Inspection requested, but failed to forward current view!");
     }
 
-    fn handle_init_join(&mut self, self_recipient: HpvRecipient, bootstrap: HpvRecipient) {
+    fn handle_init_join(&mut self, self_recipient: Peer, bootstrap: Peer) {
         bootstrap
+            .recipient
             .do_send(HpvMsg::Join(self_recipient.into()))
             .log_error("Failed to dispatch Join request to bootstrap node");
     }
 
-    fn handle_join(&mut self, new_peer: HpvRecipient) {
+    fn handle_join(&mut self, self_peer: Peer, new_peer: Peer) {
+        if !self.active_view.contains(&new_peer) && self.active_view.is_full() {
+            self.drop_random_active_peer(&self_peer);
+        }
+        self.active_view.for_each(|p| {
+            p.recipient
+                .do_send(HpvMsg::ForwardJoin(new_peer.clone().into()))
+                .log_error("Failed to forward join");
+        });
+        self.promote_peer(new_peer);
+    }
+
+    fn handle_forward_join(&mut self, new_peer: Peer) {
         self.active_view.for_each(|p| {
             p.recipient
                 .do_send(HpvMsg::Join(new_peer.clone().into()))
                 .log_error("Failed to forward join");
         });
+    }
+
+    fn handle_disconnect(&mut self, new_peer: Peer) {
+        self.active_view.for_each(|p| {
+            p.recipient
+                .do_send(HpvMsg::Join(new_peer.clone().into()))
+                .log_error("Failed to forward join");
+        });
+    }
+
+    fn drop_random_active_peer(&mut self, self_peer: &Peer) {
+        match self.active_view.sample_one().cloned() {
+            Some(node) => {
+                node.recipient
+                    .do_send(HpvMsg::Disconnect(self_peer.clone()))
+                    .log_error("Failed to send Disconnect");
+                self.active_view.remove(&node);
+                self.passive_view.insert(node);
+            }
+            None => {
+                println!("Wanted to drop random active peer, but none found");
+            }
+        }
+    }
+
+    fn promote_peer(&mut self, self_peer: Peer) {
+        self.active_view.insert(self_peer);
+        // TODO: Connect to the peer / Start watching the peer for disconnect
     }
 }
 

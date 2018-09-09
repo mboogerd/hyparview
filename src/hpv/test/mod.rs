@@ -79,6 +79,11 @@ impl<T> Expectation<T> for Receiver<T> {
     }
 }
 
+fn mock_hpv_peer() -> (Receiver<HpvMsg>, Peer) {
+    let (recv, recp): (Receiver<HpvMsg>, Recipient<HpvMsg>) = mock_recipient();
+    (recv, recp.into())
+}
+
 fn mock_recipient<T>() -> (Receiver<T>, Recipient<T>)
 where
     T: 'static + Send + Message,
