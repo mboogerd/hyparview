@@ -107,11 +107,15 @@ impl Handler<HpvMsg> for HyParViewActor {
             HpvMsg::InitiateJoin(v) => self.handle_init_join(self_peer, v),
             HpvMsg::Join(p) => self.handle_join(self_peer, p),
             HpvMsg::ForwardJoin {
-                joining: p,
-                forwarder: f,
+                joining,
+                forwarder,
                 ttl,
-            } => self.handle_forward_join(self_peer, p, f, ttl),
-            HpvMsg::Disconnect(p) => self.handle_disconnect(p),
+            } => self.handle_forward_join(self_peer, joining, forwarder, ttl),
+            HpvMsg::Neighbour { peer, prio } => self.handle_neighbour(self_peer, peer, prio),
+            HpvMsg::NeighbourReply { peer, accepted } => {
+                self.handle_neighbour_reply(self_peer, peer, accepted)
+            }
+            HpvMsg::Disconnect(p) => self.handle_disconnect(self_peer, p),
         };
         // Satisfy actix contract
         Ok(())
@@ -184,12 +188,25 @@ impl HyParViewActor {
         }
     }
 
-    pub fn handle_disconnect(&mut self, new_peer: Peer) {
-        self.active_view.for_each(|p| {
-            p.recipient
-                .do_send(HpvMsg::Join(new_peer.clone()))
-                .log_error("Failed to forward join");
-        });
+    pub fn handle_disconnect(&mut self, self_peer: Peer, remove: Peer) {
+        if self.active_view.contains(&remove) {
+            self.active_view.remove(&remove);
+        }
+
+        match self.passive_view.sample_one().cloned() {
+            Some(candidate) => {
+                candidate
+                    .recipient
+                    .do_send(HpvMsg::Neighbour {
+                        peer: self_peer,
+                        prio: self.active_view.len() == 0,
+                    })
+                    .log_error("Failed to promote Neighbour");
+                self.passive_view.remove(&candidate);
+                self.promote_peer(candidate);
+            }
+            None => {}
+        }
     }
 
     pub fn drop_random_active_peer(&mut self, self_peer: &Peer) {
@@ -235,6 +252,35 @@ impl HyParViewActor {
             self.passive_view.insert(new_peer);
         }
     }
+
+    pub fn handle_neighbour(&mut self, self_peer: Peer, neighbour: Peer, prio: bool) {
+        if prio && self.active_view.is_full() {
+            self.drop_random_active_peer(&self_peer);
+        }
+
+        if self.active_view.is_full() {
+            neighbour
+                .recipient
+                .do_send(HpvMsg::NeighbourReply {
+                    peer: self_peer,
+                    accepted: false,
+                })
+                .log_error("Failed to send neighbour rejection message");
+        } else {
+            neighbour
+                .recipient
+                .do_send(HpvMsg::NeighbourReply {
+                    peer: self_peer,
+                    accepted: true,
+                })
+                .log_error("Failed to send neighbour acceptance message");
+
+            self.promote_peer(neighbour.clone());
+            self.passive_view.remove(&neighbour);
+        }
+    }
+
+    pub fn handle_neighbour_reply(&mut self, self_peer: Peer, neighbour: Peer, accepted: bool) {}
 }
 
 #[cfg(test)]

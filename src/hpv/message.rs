@@ -13,6 +13,14 @@ pub enum HpvMsg {
         forwarder: Peer,
         ttl: usize,
     },
+    Neighbour {
+        peer: Peer,
+        prio: bool,
+    },
+    NeighbourReply {
+        peer: Peer,
+        accepted: bool,
+    },
     Disconnect(Peer),
 }
 
@@ -24,6 +32,9 @@ impl fmt::Debug for HpvMsg {
             HpvMsg::Join(p) => write!(f, "Join({})", p),
             // FIXME: Somehow cannot be destructured without a fmt macro error...?
             HpvMsg::ForwardJoin { .. } => write!(f, "ForwardJoin()"),
+            // FIXME: Somehow cannot be destructured without a fmt macro error...?
+            HpvMsg::Neighbour { .. } => write!(f, "Neighbour()"),
+            HpvMsg::NeighbourReply { .. } => write!(f, "NeighbourReply()"),
             HpvMsg::Disconnect(p) => write!(f, "Disconnect({})", p),
         }
     }
