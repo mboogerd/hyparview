@@ -4,3 +4,4 @@ fn main() {
 
 pub mod bounded_set;
 pub mod hpv;
+pub mod util;

@@ -5,105 +5,27 @@ extern crate futures_core;
 use self::actix::prelude::*;
 use self::actix::Recipient;
 use bounded_set::BoundedSet;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
-use std::fmt;
-use std::fmt::Display;
-use std::hash::{Hash, Hasher};
 use std::io;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::Duration;
+use util::logged::*;
 
-#[derive(Clone)]
-pub struct Config {
-    max_active_view_size: usize,
-    max_passive_view_size: usize,
-    active_rwl: usize,
-    passive_rwl: usize,
-    shuffle_rwl: usize,
-    shuffle_active: usize,
-    shuffle_passive: usize,
-    shuffle_interval: Duration,
-}
+mod config;
+pub use self::config::*;
 
-impl Config {
-    pub fn default() -> Config {
-        Config {
-            max_active_view_size: 4,
-            max_passive_view_size: 4,
-            active_rwl: 3,
-            passive_rwl: 2,
-            shuffle_rwl: 1,
-            shuffle_active: 2,
-            shuffle_passive: 2,
-            shuffle_interval: Duration::from_secs(30),
-        }
-    }
-}
+mod peer;
+pub use self::peer::*;
 
-// Dynamic address
-#[derive(Eq, PartialEq, Hash, Clone)]
-pub struct Peer {
-    recipient: HpvRecipient,
-}
+mod message;
+pub use self::message::*;
 
-impl Into<Peer> for HpvRecipient {
-    fn into(self) -> Peer {
-        Peer { recipient: self }
-    }
-}
-
-impl fmt::Debug for Peer {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        Display::fmt(&self, f)
-    }
-}
-impl fmt::Display for Peer {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let mut hasher = DefaultHasher::new();
-        self.recipient.hash(&mut hasher);
-        write!(f, "Peer {}", hasher.finish())
-    }
-}
-
-impl Message for Views {
-    type Result = Result<(), io::Error>;
-}
+mod views;
+pub use self::views::*;
 
 type ViewsRecipient = Recipient<Views>;
 
 type HpvRecipient = Recipient<HpvMsg>;
-
-#[derive(Eq, PartialEq, Clone)]
-pub enum HpvMsg {
-    Inspect(ViewsRecipient),
-    InitiateJoin(Peer),
-    Join(Peer),
-    ForwardJoin {
-        joining: Peer,
-        forwarder: Peer,
-        ttl: usize,
-    },
-    Disconnect(Peer),
-}
-
-impl fmt::Debug for HpvMsg {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            HpvMsg::Inspect(_) => write!(f, "Inspect"),
-            HpvMsg::InitiateJoin(p) => write!(f, "InitiateJoin({})", p),
-            HpvMsg::Join(p) => write!(f, "Join({})", p),
-            // FIXME: Somehow cannot be destructured without a fmt macro error...?
-            HpvMsg::ForwardJoin { .. } => write!(f, "ForwardJoin()"),
-            HpvMsg::Disconnect(p) => write!(f, "Disconnect({})", p),
-        }
-    }
-}
-
-impl Message for HpvMsg {
-    type Result = Result<(), io::Error>;
-}
 
 pub struct HyParViewActor {
     config: Config,
@@ -171,21 +93,6 @@ impl HyParViewActor {
     }
 }
 
-#[derive(Eq, PartialEq, Debug)]
-pub struct Views {
-    active_view: BoundedSet<Peer>,
-    passive_view: BoundedSet<Peer>,
-}
-
-impl Views {
-    pub fn from_hyparview(actor: &HyParViewActor) -> Views {
-        Views {
-            active_view: actor.active_view.clone(),
-            passive_view: actor.passive_view.clone(),
-        }
-    }
-}
-
 impl Actor for HyParViewActor {
     type Context = Context<Self>;
 }
@@ -212,19 +119,19 @@ impl Handler<HpvMsg> for HyParViewActor {
 }
 
 impl HyParViewActor {
-    fn handle_inspect(&self, v: ViewsRecipient) {
+    pub fn handle_inspect(&self, v: ViewsRecipient) {
         v.do_send(Views::from_hyparview(self))
             .log_error("Inspection requested, but failed to forward current view!");
     }
 
-    fn handle_init_join(&mut self, self_recipient: Peer, bootstrap: Peer) {
+    pub fn handle_init_join(&mut self, self_recipient: Peer, bootstrap: Peer) {
         bootstrap
             .recipient
             .do_send(HpvMsg::Join(self_recipient.into()))
             .log_error("Failed to dispatch Join request to bootstrap node");
     }
 
-    fn handle_join(&mut self, self_peer: Peer, new_peer: Peer) {
+    pub fn handle_join(&mut self, self_peer: Peer, new_peer: Peer) {
         if !self.active_view.contains(&new_peer) && self.active_view.is_full() {
             self.drop_random_active_peer(&self_peer);
         }
@@ -240,7 +147,7 @@ impl HyParViewActor {
         self.promote_peer(new_peer);
     }
 
-    fn handle_forward_join(
+    pub fn handle_forward_join(
         &mut self,
         self_peer: Peer,
         new_peer: Peer,
@@ -268,13 +175,16 @@ impl HyParViewActor {
                             })
                             .log_error("Failed to forward join to random peer");
                     });
+                } else {
+                    // If we cannot forward, it's better to expand our active view
+                    self.add_node_to_active_view(self_peer, new_peer);
                 }
                 self.active_view.insert(forwarder);
             }
         }
     }
 
-    fn handle_disconnect(&mut self, new_peer: Peer) {
+    pub fn handle_disconnect(&mut self, new_peer: Peer) {
         self.active_view.for_each(|p| {
             p.recipient
                 .do_send(HpvMsg::Join(new_peer.clone()))
@@ -282,7 +192,7 @@ impl HyParViewActor {
         });
     }
 
-    fn drop_random_active_peer(&mut self, self_peer: &Peer) {
+    pub fn drop_random_active_peer(&mut self, self_peer: &Peer) {
         // FIXME: Shouldn't need clone???
         match self.active_view.sample_one().cloned() {
             Some(node) => {
@@ -298,12 +208,12 @@ impl HyParViewActor {
         }
     }
 
-    fn promote_peer(&mut self, new_peer: Peer) {
+    pub fn promote_peer(&mut self, new_peer: Peer) {
         self.active_view.insert(new_peer);
         // TODO: Connect to the peer / Start watching the peer for disconnect
     }
 
-    fn add_node_to_active_view(&mut self, self_peer: Peer, new_peer: Peer) {
+    pub fn add_node_to_active_view(&mut self, self_peer: Peer, new_peer: Peer) {
         if new_peer != self_peer && !self.active_view.contains(&new_peer) {
             if self.active_view.is_full() {
                 self.drop_random_active_peer(&self_peer);
@@ -312,7 +222,7 @@ impl HyParViewActor {
         }
     }
 
-    fn add_node_to_passive_view(&mut self, self_peer: Peer, new_peer: Peer) {
+    pub fn add_node_to_passive_view(&mut self, self_peer: Peer, new_peer: Peer) {
         if new_peer != self_peer && !self.active_view.contains(&new_peer)
             && !self.passive_view.contains(&new_peer)
         {
@@ -323,19 +233,6 @@ impl HyParViewActor {
                 self.passive_view.remove(&remove);
             }
             self.passive_view.insert(new_peer);
-        }
-    }
-}
-
-trait Logged {
-    fn log_error(&self, msg: &str);
-}
-
-impl<V, E: Display> Logged for Result<V, E> {
-    fn log_error(&self, msg: &str) {
-        match self {
-            Ok(_) => (),
-            Err(e) => println!("[Error] Description: '{}'. Cause: '{}'", msg, e),
         }
     }
 }

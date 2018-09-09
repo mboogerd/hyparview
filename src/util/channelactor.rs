@@ -1,5 +1,9 @@
-use super::actix::dev::MessageResponse;
-use super::actix::prelude::*;
+extern crate actix;
+extern crate futures;
+extern crate futures_channel;
+
+use self::actix::dev::MessageResponse;
+use self::actix::prelude::*;
 use std::sync::mpsc::{channel, Receiver, SendError, Sender};
 
 ///A ChannelActor wraps a `Sender` and relays all messages received to it
@@ -37,3 +41,6 @@ where
         TrySendResult(self.tx.send(msg)).into()
     }
 }
+
+#[cfg(test)]
+mod test {}
