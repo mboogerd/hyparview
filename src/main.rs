@@ -1,3 +1,6 @@
+#[macro_use]
+extern crate maplit;
+
 fn main() {
     println!("Hello, world!");
 }

@@ -36,6 +36,8 @@ pub struct HyParViewActor {
     passive_view: BoundedSet<Peer>,
     // TODO: This should be replaced by `Environment` once implemented
     out: Sender<Peer>,
+    shuffle_id: u32,
+    shuffling: Vec<(u32, HashSet<Peer>)>,
 }
 
 impl HyParViewActor {
@@ -47,6 +49,8 @@ impl HyParViewActor {
             active_view: BoundedSet::new(config.max_active_view_size),
             passive_view: BoundedSet::new(config.max_passive_view_size),
             out: tx,
+            shuffle_id: 0,
+            shuffling: vec![],
         };
         (rx, hpv)
     }
@@ -129,10 +133,12 @@ impl Handler<HpvMsg> for HyParViewActor {
                 self.handle_neighbour_reply(self_peer, peer, accepted)
             }
             HpvMsg::Shuffle {
+                id,
                 origin,
                 exchange,
                 ttl,
-            } => self.handle_shuffle(origin, exchange, ttl),
+            } => self.handle_shuffle(id, origin, exchange, ttl),
+            HpvMsg::ShuffleReply(id, ps) => self.handle_shuffle_reply(id, self_peer, ps),
             HpvMsg::Disconnect(p) => self.handle_disconnect(self_peer, &p),
         };
         // Satisfy actix contract
@@ -322,6 +328,7 @@ impl HyParViewActor {
                 };
                 let passive_part = self.passive_view.sample(self.config.shuffle_passive);
                 let shuffle_request = HpvMsg::Shuffle {
+                    id: self.shuffle_id,
                     origin: self_peer.clone(),
                     exchange: active_part
                         .union(&passive_part)
@@ -329,6 +336,8 @@ impl HyParViewActor {
                         .collect(),
                     ttl: self.config.shuffle_rwl,
                 };
+
+                self.shuffle_id += 1;
 
                 shuffle_target
                     .recipient
@@ -343,13 +352,53 @@ impl HyParViewActor {
         }
     }
 
-    pub fn handle_shuffle(&mut self, _origin: Peer, _exchange: HashSet<Peer>, ttl: usize) {
+    pub fn handle_shuffle(&mut self, id: u32, origin: Peer, exchange: HashSet<Peer>, ttl: usize) {
         if ttl == 1 || self.active_view.len() <= 1 {
             // construct a response with candidates from our passive view
+            let mut passive_fragment = self.passive_view.clone();
+            exchange.iter().for_each(|p| {
+                passive_fragment.remove(p);
+            });
+            passive_fragment.remove(&origin);
+            let sample: HashSet<Peer> = passive_fragment
+                .sample(exchange.len() + 1)
+                .iter()
+                .map(|x| (**x).clone())
+                .collect();
 
+            origin
+                .recipient
+                .do_send(HpvMsg::ShuffleReply(id, sample.clone()))
+                .log_error("Failed to reply to shuffle request");
+
+            let mut all_peers = exchange;
+            if !self.active_view.contains(&origin) {
+                all_peers.insert(origin);
+            }
+            self.passive_view.bounded_union(&all_peers, &sample)
         } else {
-
+            // FIXME: structural sharing would really start to be beneficial...
+            let forward_message = HpvMsg::Shuffle {
+                id: self.shuffle_id,
+                origin: origin.clone(),
+                exchange: exchange,
+                ttl: ttl - 1,
+            };
+            self.shuffle_id += 1;
+            let mut active_fragment = self.active_view.clone();
+            active_fragment.remove(&origin);
+            match active_fragment.sample_one() {
+                Some(target) => target
+                    .recipient
+                    .do_send(forward_message)
+                    .log_error("Failed to propagate Shuffle request"),
+                _ => {}
+            };
         }
+    }
+
+    pub fn handle_shuffle_reply(&mut self, id: u32, origin: Peer, exchange: HashSet<Peer>) {
+        // self.passive_view.bounded_union(&exchange, drop_priority)
     }
 }
 

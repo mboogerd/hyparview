@@ -23,10 +23,12 @@ pub enum HpvMsg {
         accepted: bool,
     },
     Shuffle {
+        id: u32,
         origin: Peer,
         exchange: HashSet<Peer>,
         ttl: usize,
     },
+    ShuffleReply(u32, HashSet<Peer>),
     Disconnect(Peer),
 }
 
@@ -42,6 +44,7 @@ impl fmt::Debug for HpvMsg {
             HpvMsg::Neighbour { .. } => write!(f, "Neighbour()"),
             HpvMsg::NeighbourReply { .. } => write!(f, "NeighbourReply()"),
             HpvMsg::Shuffle { .. } => write!(f, "Shuffle()"),
+            HpvMsg::ShuffleReply(_, _) => write!(f, "ShuffleReply()"),
             HpvMsg::Disconnect(p) => write!(f, "Disconnect({})", p),
         }
     }
