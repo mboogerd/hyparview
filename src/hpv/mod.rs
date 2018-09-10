@@ -1,6 +1,9 @@
 extern crate actix;
+extern crate futures;
 extern crate futures_channel;
 extern crate futures_core;
+extern crate tokio;
+extern crate tokio_timer;
 
 use self::actix::prelude::*;
 use self::actix::Recipient;
@@ -95,6 +98,16 @@ impl HyParViewActor {
 
 impl Actor for HyParViewActor {
     type Context = Context<Self>;
+
+    fn started(&mut self, ctx: &mut Self::Context) {
+        ctx.run_interval(
+            self.config.shuffle_interval,
+            |hpv: &mut HyParViewActor, ctx: &mut Self::Context| {
+                let self_peer: Peer = ctx.address().recipient().into();
+                hpv.initiate_shuffle(self_peer);
+            },
+        );
+    }
 }
 
 impl Handler<HpvMsg> for HyParViewActor {
@@ -115,6 +128,11 @@ impl Handler<HpvMsg> for HyParViewActor {
             HpvMsg::NeighbourReply { peer, accepted } => {
                 self.handle_neighbour_reply(self_peer, peer, accepted)
             }
+            HpvMsg::Shuffle {
+                origin,
+                exchange,
+                ttl,
+            } => self.handle_shuffle(origin, exchange, ttl),
             HpvMsg::Disconnect(p) => self.handle_disconnect(self_peer, &p),
         };
         // Satisfy actix contract
@@ -171,12 +189,13 @@ impl HyParViewActor {
                 self.active_view.remove(&forwarder);
                 if self.active_view.len() > 0 {
                     self.active_view.sample_one().iter().for_each(|p| {
+                        let msg = HpvMsg::ForwardJoin {
+                            joining: new_peer.clone(),
+                            forwarder: self_peer.clone(),
+                            ttl: ttl - 1,
+                        };
                         p.recipient
-                            .do_send(HpvMsg::ForwardJoin {
-                                joining: new_peer.clone(),
-                                forwarder: self_peer.clone(),
-                                ttl: ttl - 1,
-                            })
+                            .do_send(msg)
                             .log_error("Failed to forward join to random peer");
                     });
                 } else {
@@ -193,6 +212,10 @@ impl HyParViewActor {
             self.active_view.remove(remove);
         }
 
+        self.promote_random_peer(self_peer);
+    }
+
+    pub fn promote_random_peer(&mut self, self_peer: Peer) {
         match self.passive_view.sample_one().cloned() {
             Some(candidate) => {
                 candidate
@@ -284,6 +307,48 @@ impl HyParViewActor {
         if !accepted {
             self.handle_disconnect(self_peer, &neighbour);
             self.passive_view.insert(neighbour);
+        }
+    }
+
+    pub fn initiate_shuffle(&mut self, self_peer: Peer) {
+        match self.active_view.sample_one() {
+            Some(shuffle_target) => {
+                // Clone the active-view to sample of it, without the shuffle target...?
+                // TODO: Improve!
+                let mut clone = self.active_view.clone();
+                let active_part = {
+                    clone.remove(&shuffle_target);
+                    clone.sample(self.config.shuffle_active)
+                };
+                let passive_part = self.passive_view.sample(self.config.shuffle_passive);
+                let shuffle_request = HpvMsg::Shuffle {
+                    origin: self_peer.clone(),
+                    exchange: active_part
+                        .union(&passive_part)
+                        .map(|e| (**e).clone())
+                        .collect(),
+                    ttl: self.config.shuffle_rwl,
+                };
+
+                shuffle_target
+                    .recipient
+                    .do_send(shuffle_request)
+                    .log_error("Failed to initate shuffle request");
+            }
+            None => {}
+        }
+
+        if !self.active_view.is_full() {
+            self.promote_random_peer(self_peer);
+        }
+    }
+
+    pub fn handle_shuffle(&mut self, _origin: Peer, _exchange: HashSet<Peer>, ttl: usize) {
+        if ttl == 1 || self.active_view.len() <= 1 {
+            // construct a response with candidates from our passive view
+
+        } else {
+
         }
     }
 }

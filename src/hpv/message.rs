@@ -1,5 +1,6 @@
 use super::actix::Message;
 use super::{Peer, ViewsRecipient};
+use std::collections::HashSet;
 use std::fmt;
 use std::io;
 
@@ -21,6 +22,11 @@ pub enum HpvMsg {
         peer: Peer,
         accepted: bool,
     },
+    Shuffle {
+        origin: Peer,
+        exchange: HashSet<Peer>,
+        ttl: usize,
+    },
     Disconnect(Peer),
 }
 
@@ -35,6 +41,7 @@ impl fmt::Debug for HpvMsg {
             // FIXME: Somehow cannot be destructured without a fmt macro error...?
             HpvMsg::Neighbour { .. } => write!(f, "Neighbour()"),
             HpvMsg::NeighbourReply { .. } => write!(f, "NeighbourReply()"),
+            HpvMsg::Shuffle { .. } => write!(f, "Shuffle()"),
             HpvMsg::Disconnect(p) => write!(f, "Disconnect({})", p),
         }
     }
