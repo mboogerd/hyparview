@@ -103,6 +103,13 @@ impl<E: Eq + PartialEq + Hash> BoundedSet<E> {
     {
         self.wraps.iter().for_each(f);
     }
+
+    pub fn as_set(&self) -> HashSet<E>
+    where
+        E: Clone,
+    {
+        self.wraps.clone()
+    }
 }
 
 impl<E: Debug + Display + Eq + Hash> Display for BoundedSet<E> {

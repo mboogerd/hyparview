@@ -68,3 +68,6 @@ mod active_view;
 
 #[cfg(test)]
 mod loquat;
+
+#[cfg(test)]
+mod discovery;

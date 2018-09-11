@@ -12,3 +12,4 @@ futures = "0.1.24"
 futures-core = "0.2.1"
 futures-channel = "0.2.1"
 maplit = "1.0.1"
+libp2p = { git = "https://github.com/libp2p/rust-libp2p" }

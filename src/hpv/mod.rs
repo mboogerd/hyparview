@@ -169,6 +169,8 @@ impl HyParViewActor {
     }
 
     pub fn handle_join(&mut self, self_peer: Peer, new_peer: Peer) {
+        self.publish_peer(new_peer.clone());
+
         if !self.active_view.contains(&new_peer) && self.active_view.is_full() {
             self.drop_random_active_peer(&self_peer);
         }
@@ -191,6 +193,8 @@ impl HyParViewActor {
         forwarder: Peer,
         ttl: usize,
     ) {
+        self.publish_peer(new_peer.clone());
+
         if ttl == 0 || self.active_view.len() == 0 {
             self.add_node_to_active_view(self_peer, new_peer);
         } else {
@@ -292,6 +296,8 @@ impl HyParViewActor {
     }
 
     pub fn handle_neighbour(&mut self, self_peer: Peer, neighbour: Peer, prio: bool) {
+        self.publish_peer(neighbour.clone());
+
         if prio && self.active_view.is_full() {
             self.drop_random_active_peer(&self_peer);
         }
@@ -319,6 +325,8 @@ impl HyParViewActor {
     }
 
     pub fn handle_neighbour_reply(&mut self, self_peer: Peer, neighbour: Peer, accepted: bool) {
+        self.publish_peer(neighbour.clone());
+
         if !accepted {
             self.handle_disconnect(self_peer, &neighbour);
             self.passive_view.insert(neighbour);
@@ -362,6 +370,8 @@ impl HyParViewActor {
     }
 
     pub fn handle_shuffle(&mut self, id: u32, origin: Peer, exchange: HashSet<Peer>, ttl: usize) {
+        self.publish_peers(exchange.clone());
+
         if ttl == 1 || self.active_view.len() <= 1 {
             // construct a response with candidates from our passive view
             let mut passive_fragment = self.passive_view.clone();
@@ -407,17 +417,36 @@ impl HyParViewActor {
     }
 
     pub fn handle_shuffle_reply(&mut self, shuffle_reply_id: u32, exchange: HashSet<Peer>) {
-        if self.shuffle_id == shuffle_reply_id {
+        self.publish_peers(exchange.clone());
+
+        if self.shuffling && self.shuffle_id == shuffle_reply_id {
             self.passive_view.bounded_union(&exchange, &self.offer);
             self.offer = HashSet::default();
         } else if self.shuffle_id < shuffle_reply_id {
             println!("[WARN] Received shuffle reply with id ({}). This exceeds largest dispatched shuffle request id ({})", shuffle_reply_id, self.shuffle_id);
-        } else if self.shuffle_id < shuffle_reply_id {
+        } else if self.shuffle_id > shuffle_reply_id {
             println!(
-                "[INFO] Received response ({}) to old shuffle request (current={}), ignoring",
+                "[INFO] Received reply ({}) to old shuffle request (current={}), ignoring",
                 shuffle_reply_id, self.shuffle_id
             );
+        } else {
+            println!("[INFO] Received duplicate shuffle reply")
         }
+    }
+
+    pub fn publish_peer(&self, peer: Peer) {
+        self.publish_peers(hashset!{peer});
+    }
+
+    pub fn publish_peers(&self, peers: HashSet<Peer>) {
+        peers
+            .iter()
+            .filter(|p| !self.active_view.contains(p))
+            .filter(|p| !self.passive_view.contains(p))
+            .cloned()
+            .for_each(|p| {
+                self.out.send(p).log_error("Failed to publish peer");
+            });
     }
 }
 
