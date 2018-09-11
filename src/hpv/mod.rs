@@ -37,7 +37,8 @@ pub struct HyParViewActor {
     // TODO: This should be replaced by `Environment` once implemented
     out: Sender<Peer>,
     shuffle_id: u32,
-    shuffling: Vec<(u32, HashSet<Peer>)>,
+    shuffling: bool, // true if a request is dispatched, but no reply received
+    offer: HashSet<Peer>,
 }
 
 impl HyParViewActor {
@@ -50,7 +51,8 @@ impl HyParViewActor {
             passive_view: BoundedSet::new(config.max_passive_view_size),
             out: tx,
             shuffle_id: 0,
-            shuffling: vec![],
+            shuffling: false,
+            offer: HashSet::default(),
         };
         (rx, hpv)
     }
@@ -89,6 +91,13 @@ impl HyParViewActor {
         peers.iter().cloned().for_each(|p| {
             self.active_view.insert(p);
         });
+        self
+    }
+
+    fn set_shuffling(&mut self, id: u32, offer: HashSet<Peer>) -> &mut Self {
+        self.shuffling = true;
+        self.shuffle_id = id;
+        self.offer = offer;
         self
     }
 
@@ -138,7 +147,7 @@ impl Handler<HpvMsg> for HyParViewActor {
                 exchange,
                 ttl,
             } => self.handle_shuffle(id, origin, exchange, ttl),
-            HpvMsg::ShuffleReply(id, ps) => self.handle_shuffle_reply(id, self_peer, ps),
+            HpvMsg::ShuffleReply(id, ps) => self.handle_shuffle_reply(id, ps),
             HpvMsg::Disconnect(p) => self.handle_disconnect(self_peer, &p),
         };
         // Satisfy actix contract
@@ -397,8 +406,18 @@ impl HyParViewActor {
         }
     }
 
-    pub fn handle_shuffle_reply(&mut self, id: u32, origin: Peer, exchange: HashSet<Peer>) {
-        // self.passive_view.bounded_union(&exchange, drop_priority)
+    pub fn handle_shuffle_reply(&mut self, shuffle_reply_id: u32, exchange: HashSet<Peer>) {
+        if self.shuffle_id == shuffle_reply_id {
+            self.passive_view.bounded_union(&exchange, &self.offer);
+            self.offer = HashSet::default();
+        } else if self.shuffle_id < shuffle_reply_id {
+            println!("[WARN] Received shuffle reply with id ({}). This exceeds largest dispatched shuffle request id ({})", shuffle_reply_id, self.shuffle_id);
+        } else if self.shuffle_id < shuffle_reply_id {
+            println!(
+                "[INFO] Received response ({}) to old shuffle request (current={}), ignoring",
+                shuffle_reply_id, self.shuffle_id
+            );
+        }
     }
 }
 

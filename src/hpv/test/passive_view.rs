@@ -180,19 +180,64 @@ fn handle_shuffle_when_activeviewsize_0or1() {
 }
 
 #[test]
-fn include_exchangeset_included_in_shuffle_reply() {
+fn merge_exchangeset_included_in_shuffle_reply() {
     let _ = System::new("test");
 
     let (_, actv_peer) = mock_hpv_peer();
     let (_, shuffled_peer) = mock_hpv_peer();
 
     let (_, mut hpv) = new_hyparview(|x| {
-        x.add_active_node(actv_peer.clone());
+        x.add_active_node(actv_peer.clone())
+            .set_shuffling(1337, HashSet::default());
     });
-    hpv.handle_shuffle_reply(0, actv_peer.clone(), hashset!{shuffled_peer.clone()});
+
+    hpv.handle_shuffle_reply(1337, hashset!{shuffled_peer.clone()});
 
     assert_eq!(hpv.active_view.len(), 1);
     assert!(hpv.active_view.contains(&actv_peer));
+
     assert_eq!(hpv.passive_view.len(), 1);
     assert!(hpv.passive_view.contains(&shuffled_peer));
+}
+
+#[test]
+fn ignore_illegal_shuffle_replies() {
+    let _ = System::new("test");
+    let (_, shuffled_peer) = mock_hpv_peer();
+
+    let (_, mut hpv) = new_hyparview(|x| {
+        x.set_shuffling(1337, HashSet::default());
+    });
+
+    hpv.handle_shuffle_reply(1336, hashset!{shuffled_peer.clone()});
+    hpv.handle_shuffle_reply(1338, hashset!{shuffled_peer.clone()});
+
+    assert_eq!(hpv.active_view.len(), 0);
+    assert_eq!(hpv.passive_view.len(), 0);
+}
+
+#[test]
+fn prioritize_removal_of_shuffled_peers() {
+    let _ = System::new("test");
+
+    let (_, actv_peer) = mock_hpv_peer();
+    let (_, shuffled_peer) = mock_hpv_peer();
+    let (_, received_peer) = mock_hpv_peer();
+
+    let (_, mut hpv) = new_hyparview(|x| {
+        x.add_active_node(actv_peer.clone())
+            .add_passive_node(shuffled_peer.clone())
+            .set_shuffling(1337, hashset!{shuffled_peer.clone()})
+            .change_config(|c| {
+                c.max_passive_view_size = 1;
+            });
+    });
+
+    hpv.handle_shuffle_reply(1337, hashset!{received_peer.clone()});
+
+    assert_eq!(hpv.active_view.len(), 1);
+    assert!(hpv.active_view.contains(&actv_peer));
+
+    assert_eq!(hpv.passive_view.len(), 1);
+    assert!(hpv.passive_view.contains(&received_peer));
 }
