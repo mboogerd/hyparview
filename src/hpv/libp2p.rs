@@ -6,7 +6,7 @@ use super::bytes::{BufMut, Bytes, BytesMut};
 use super::futures::future;
 use super::futures::future::{Future, FutureResult};
 use super::futures::prelude::*;
-use super::futures::sync::mpsc::*;
+use super::futures::stream::*;
 use super::futures::sync::{mpsc, oneshot};
 use super::libp2p_core::*;
 use super::tokio_codec::{Decoder, Encoder, Framed};
@@ -22,7 +22,7 @@ use std::sync::Arc;
 pub struct HpvConfig {
     self_peer: Peer,
     my_addr_proto: proto::hpv::Peer,
-    recv_peer: Receiver<Peer>,
+    recv_peer: mpsc::Receiver<Peer>,
 }
 
 impl<C, Maf> ConnectionUpgrade<C, Maf> for HpvConfig
@@ -53,7 +53,10 @@ where
     }
 }
 
-type HpvStreamSink = Box<Stream<Item = (), Error = SendError<HpvMsg>> + Send>;
+type HpvStreamSink = Box<(
+    Stream<Item = (), Error = IoError> + Send,
+    Sink<SinkItem = (), SinkError = IoError> + Send,
+)>;
 
 fn hyparview_protocol<S>(socket: S, config: HpvConfig) -> HpvStreamSink
 where
@@ -61,7 +64,7 @@ where
 {
     // Create a channel for this connection. The sender part should be propagated with each incoming
     // message, such that the message processor can communicate to the remote party
-    let (send, recv): (Sender<HpvMsg>, Receiver<HpvMsg>) = channel(10);
+    let (send, recv): (mpsc::Sender<HpvMsg>, mpsc::Receiver<HpvMsg>) = channel(10);
 
     // Get a copy of our local network address in protobuf
     let my_addr_proto = config.my_addr_proto.clone();
@@ -86,20 +89,32 @@ where
 
     // All messages received back from the HpvMsg processing actor using the channel of _this_
     // connection should be forwarded to the remote party
-    let sink = recv.forward(framed);
+    let sink = recv.map_err(|e| e.into()).forward(framed);
 
     // Get a reference to our singleton actor that should receive messages of the HyParView protocol
     let self_peer = config.self_peer.clone();
     // Send all messages received from the remote side to the message processor
-    let source = reader.for_each(move |msg| self_peer.recipient.do_send(msg));
+    use super::actix;
+    let source = reader.for_each(move |msg| {
+        self_peer.recipient.do_send(msg).map_err(|e| match e {
+            actix::prelude::SendError::Full(_) => IoError::new(
+                IoErrorKind::WouldBlock,
+                "Message can not be propagated because actor mailbox is full",
+            ),
+            actix::prelude::SendError::Closed(_) => IoError::new(
+                IoErrorKind::ConnectionAborted,
+                "Message could not be sent as the actor mailbox is closed",
+            ),
+        })
+    });
 
     // What to return such that:
     // 1. We satisfy `Sized` constraint?
     // 2. The stream will actually start, supposedly a problem?
-    Box::new((source, sink)) as Box<Stream<Item = _, Error = SendError<HpvMsg>> + Send>
+    Box::new((source, sink)) as HpvStreamSink
 }
 
-fn hpv_recipient(sender: Sender<HpvMsg>) -> Peer {
+fn hpv_recipient(sender: mpsc::Sender<HpvMsg>) -> Peer {
     // TODO (Merlijn): Rewrite Peer to wrap new Tokio/future channels instead. (Messages on this channel should be relayed to the actor)
     // Ignore for now
 }
