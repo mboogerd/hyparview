@@ -1,6 +1,5 @@
 extern crate actix;
 extern crate futures;
-extern crate futures_channel;
 
 use self::actix::prelude::*;
 use super::*;

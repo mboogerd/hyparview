@@ -1,6 +1,5 @@
 extern crate actix;
 extern crate futures;
-extern crate futures_channel;
 
 use hpv::Config;
 use std::fmt::Debug;

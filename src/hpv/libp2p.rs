@@ -1,28 +1,28 @@
 use super::super::proto;
+use super::super::proto::hpv::*;
 use super::super::protobuf;
 use super::super::protobuf::Message;
 use super::super::unsigned_varint::codec;
-use super::bytes::{BufMut, Bytes, BytesMut};
+use super::bytes::Bytes;
 use super::futures::future;
 use super::futures::future::{Future, FutureResult};
 use super::futures::prelude::*;
-use super::futures::stream::*;
-use super::futures::sync::{mpsc, oneshot};
+use super::futures::stream;
+use super::futures::stream::*; //{Forward, FromErr, MapErr, Repeat, SplitSink, SplitStream, Zip};
+use super::futures::sync::mpsc;
 use super::libp2p_core::*;
-use super::tokio_codec::{Decoder, Encoder, Framed};
+use super::tokio_codec::Framed;
 use super::tokio_io::{AsyncRead, AsyncWrite};
 use super::{HpvMsg, Peer};
-use std::collections::HashMap;
-use std::error::Error;
+use std::fmt;
 use std::io::{Error as IoError, ErrorKind as IoErrorKind};
 use std::iter;
-use std::sync;
-use std::sync::Arc;
 
 pub struct HpvConfig {
-    self_peer: Peer,
+    self_peer: mpsc::Sender<HpvMsg>,
     my_addr_proto: proto::hpv::Peer,
     recv_peer: mpsc::Receiver<Peer>,
+    mock_temp_peer: Peer,
 }
 
 impl<C, Maf> ConnectionUpgrade<C, Maf> for HpvConfig
@@ -37,7 +37,7 @@ where
         iter::once(("/demograph/hyparview/1.0.0".into(), ()))
     }
 
-    type Output = HpvStreamSink;
+    type Output = HpvFuture;
     type MultiaddrFuture = Maf;
     type Future = FutureResult<(Self::Output, Self::MultiaddrFuture), IoError>;
 
@@ -53,70 +53,93 @@ where
     }
 }
 
-type HpvStreamSink = Box<(
-    Stream<Item = (), Error = IoError> + Send,
-    Sink<SinkItem = (), SinkError = IoError> + Send,
-)>;
+#[must_use = "futures do nothing unless polled"]
+pub struct HpvFuture {
+    inner: Box<Future<Item = (), Error = IoError> + Send>,
+}
 
-fn hyparview_protocol<S>(socket: S, config: HpvConfig) -> HpvStreamSink
+impl Future for HpvFuture {
+    type Item = ();
+    type Error = IoError;
+
+    #[inline]
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        self.inner.poll()
+    }
+}
+
+impl fmt::Debug for HpvFuture {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt.debug_struct("HpvFuture").finish()
+    }
+}
+
+fn hyparview_protocol<S>(socket: S, config: HpvConfig) -> HpvFuture
 where
     S: AsyncRead + AsyncWrite + Send + 'static,
 {
     // Create a channel for this connection. The sender part should be propagated with each incoming
     // message, such that the message processor can communicate to the remote party
-    let (send, recv): (mpsc::Sender<HpvMsg>, mpsc::Receiver<HpvMsg>) = channel(10);
+    let (send, recv): (mpsc::Sender<HpvMsg>, mpsc::Receiver<HpvMsg>) = mpsc::channel(10);
 
-    // Get a copy of our local network address in protobuf
-    let my_addr_proto = config.my_addr_proto.clone();
-
-    let framed = Framed::new(socket, codec::UviBytes::default())
-        // Supposedly necessary?
+    let (proto_writer, proto_reader) = Framed::new(socket, codec::UviBytes::<Vec<u8>>::default())
         .from_err::<IoError>()
-        // Transform outgoing HpvMsg messages to protobuf HpvMessage
-        .with(move |request| -> Result<_, IoError> {
-            let proto_struct = msg_to_proto(request, my_addr_proto);
+        .split();
+
+    // Transform outgoing HpvMsg messages to protobuf HpvMessage
+    let hpv_writer =
+        proto_writer.with::<_, fn((_, _)) -> _, _>(|(request, self_addr)| -> Result<_, IoError> {
+            let proto_struct = msg_to_proto(request, self_addr);
             Ok(proto_struct.write_to_bytes().unwrap()) // TODO: error?
-        })
-        // Transform incoming HpvMessage protobuf requests to HpvMsg, including the sender part for
-        // this connection, such that the handler can talk back
-        .and_then(move |bytes| {
-            let response = protobuf::parse_from_bytes(&bytes)?;
-            proto_to_msg(response, hpv_recipient(send))
         });
 
-    // Splitting seems necessary in order to be able to uniquely address the sink fragment of Framed?
-    let (writer, reader) = framed.split();
+    // Get a copy of our local network address in protobuf
+    // FIXME: derive Peer from mpsc::Sender
+    let mock_peer = stream::repeat(config.mock_temp_peer);
+
+    // Transform incoming HpvMessage protobuf requests to HpvMsg, including the sender part for
+    // this connection, such that the handler can talk back
+    let hpv_reader = proto_reader.zip(mock_peer).and_then(|(bytes, remote)| {
+        let response = protobuf::parse_from_bytes(&bytes)?;
+        proto_to_msg(response, remote)
+    });
 
     // All messages received back from the HpvMsg processing actor using the channel of _this_
     // connection should be forwarded to the remote party
-    let sink = recv.map_err(|e| e.into()).forward(framed);
+    let my_addr_stream = stream::repeat(config.my_addr_proto);
+    let forward = recv
+        .zip(my_addr_stream)
+        .map_err(|e| IoError::new(IoErrorKind::UnexpectedEof, "Channel closed"))
+        .forward(hpv_writer);
 
     // Get a reference to our singleton actor that should receive messages of the HyParView protocol
     let self_peer = config.self_peer.clone();
     // Send all messages received from the remote side to the message processor
-    use super::actix;
-    let source = reader.for_each(move |msg| {
-        self_peer.recipient.do_send(msg).map_err(|e| match e {
-            actix::prelude::SendError::Full(_) => IoError::new(
-                IoErrorKind::WouldBlock,
-                "Message can not be propagated because actor mailbox is full",
-            ),
-            actix::prelude::SendError::Closed(_) => IoError::new(
-                IoErrorKind::ConnectionAborted,
-                "Message could not be sent as the actor mailbox is closed",
-            ),
-        })
-    });
+    //    let source = self_peer.send_all(hpv_reader);
+    let source = hpv_reader
+        .forward(self_peer.sink_map_err(|e| IoError::new(IoErrorKind::ConnectionAborted, "Boom")));
 
-    // What to return such that:
-    // 1. We satisfy `Sized` constraint?
-    // 2. The stream will actually start, supposedly a problem?
-    Box::new((source, sink)) as HpvStreamSink
+    // Construct a Future by aligning sink and source and selecting either
+    let final_sink = forward.map(|_| ());
+    let final_source = source.map(|_| ());
+    let final_future = to_impl(
+        final_source
+            .select(final_sink)
+            .map(|_| ())
+            // TODO: Try holding on to error cause
+            .map_err(|e| IoError::new(IoErrorKind::UnexpectedEof, "Channel closed")),
+    );
+
+    HpvFuture {
+        inner: Box::new(final_future) as Box<_>,
+    }
 }
 
-fn hpv_recipient(sender: mpsc::Sender<HpvMsg>) -> Peer {
-    // TODO (Merlijn): Rewrite Peer to wrap new Tokio/future channels instead. (Messages on this channel should be relayed to the actor)
-    // Ignore for now
+fn to_impl<I, E, F>(f: F) -> impl Future<Item = I, Error = E>
+where
+    F: Future<Item = I, Error = E>,
+{
+    f
 }
 
 fn msg_to_proto(hpv_msg: HpvMsg, self_address: proto::hpv::Peer) -> proto::hpv::HpvMessage {

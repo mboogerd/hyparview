@@ -1,6 +1,5 @@
 extern crate actix;
 extern crate futures;
-extern crate futures_channel;
 
 use self::actix::dev::MessageResponse;
 use self::actix::prelude::*;

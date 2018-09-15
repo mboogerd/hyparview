@@ -1,8 +1,8 @@
 extern crate actix;
 extern crate bytes;
 extern crate futures;
-extern crate futures_channel;
-extern crate futures_core;
+//extern crate futures_channel;
+//extern crate futures_core;
 extern crate libp2p_core;
 extern crate tokio;
 extern crate tokio_codec;
