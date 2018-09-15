@@ -1,8 +1,12 @@
 extern crate actix;
+extern crate bytes;
 extern crate futures;
 extern crate futures_channel;
 extern crate futures_core;
+extern crate libp2p_core;
 extern crate tokio;
+extern crate tokio_codec;
+extern crate tokio_io;
 extern crate tokio_timer;
 
 use self::actix::prelude::*;
@@ -25,6 +29,8 @@ pub use self::message::*;
 
 mod views;
 pub use self::views::*;
+
+pub mod libp2p;
 
 type ViewsRecipient = Recipient<Views>;
 
@@ -282,7 +288,8 @@ impl HyParViewActor {
     }
 
     pub fn add_node_to_passive_view(&mut self, self_peer: Peer, new_peer: Peer) {
-        if new_peer != self_peer && !self.active_view.contains(&new_peer)
+        if new_peer != self_peer
+            && !self.active_view.contains(&new_peer)
             && !self.passive_view.contains(&new_peer)
         {
             if self.passive_view.is_full() {

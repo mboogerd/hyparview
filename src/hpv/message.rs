@@ -6,7 +6,9 @@ use std::io;
 
 #[derive(Eq, PartialEq, Clone)]
 pub enum HpvMsg {
+    // Local message
     Inspect(ViewsRecipient),
+    // Local message
     InitiateJoin(Peer),
     Join(Peer),
     ForwardJoin {

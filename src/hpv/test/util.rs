@@ -39,7 +39,7 @@ where
     T: 'static + Send + Message,
     <T as Message>::Result: Send + MessageResponse<ChannelActor<T>, T> + From<TrySendResult<T>>,
 {
-    let (rx, ca): (Receiver<T>, ChannelActor<T>) = ChannelActor::new();
+    let (rx, ca): (Receiver<T>, ChannelActor<T>) = ChannelActor::new_std();
     let recipient = Arbiter::start(|_| ca).recipient::<T>();
     (rx, recipient)
 }

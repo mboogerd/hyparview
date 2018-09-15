@@ -4,6 +4,7 @@ extern crate futures_channel;
 
 use self::actix::dev::MessageResponse;
 use self::actix::prelude::*;
+use std::sync;
 use std::sync::mpsc::{channel, Receiver, SendError, Sender};
 
 ///A ChannelActor wraps a `Sender` and relays all messages received to it
@@ -18,12 +19,11 @@ impl<M> ChannelActor<M> {
     }
 
     /// Creates a new `Receiver`/`Sender` pair and wraps a new ChannelActor around the `Sender`
-    pub fn new() -> (Receiver<M>, ChannelActor<M>) {
-        let (tx, rx) = channel();
+    pub fn new_std() -> (sync::mpsc::Receiver<M>, ChannelActor<M>) {
+        let (tx, rx) = sync::mpsc::channel();
         (rx, ChannelActor::wrap(tx))
     }
 }
-
 impl<M: 'static> Actor for ChannelActor<M> {
     type Context = Context<Self>;
 }
@@ -41,6 +41,10 @@ where
         TrySendResult(self.tx.send(msg)).into()
     }
 }
+
+//pub struct ActorChannel<M: 'static> {
+//
+//}
 
 #[cfg(test)]
 mod test {}

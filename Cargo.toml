@@ -2,8 +2,10 @@
 name = "hyparview"
 version = "0.1.0"
 authors = ["Merlijn Boogerd <mboogerd@xebia.com>"]
+build = "build.rs"
 
 [dependencies]
+bytes = "0.4"
 rand = "0.5.5"
 actix = "0.7.4"
 tokio = "0.1.8"
@@ -13,3 +15,11 @@ futures-core = "0.2.1"
 futures-channel = "0.2.1"
 maplit = "1.0.1"
 libp2p = { git = "https://github.com/libp2p/rust-libp2p" }
+libp2p-core = { git = "https://github.com/libp2p/rust-libp2p" }
+protobuf = "2.0.2"
+tokio-codec = "0.1"
+tokio-io = "0.1"
+unsigned-varint = { version = "0.2.1", features = ["codec"] }
+
+[build-dependencies]
+protoc-rust = "2.0.2"

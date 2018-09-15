@@ -1,0 +1,67 @@
+syntax = "proto2";
+package hpv.pb;
+
+message Peer {
+	// multiaddrs for a given peer
+	repeated bytes addrs = 1;
+}
+
+enum MessageType {
+    DISCONNECT = 0;
+    JOIN = 1;
+    FORWARD_JOIN= 2;
+    NEIGHBOUR = 3;
+    NEIGHBOUR_REPLY = 4;
+    SHUFFLE = 5;
+    SHUFFLE_REPLY = 6;
+}
+
+message HpvMessage {
+    required MessageType type = 1;
+    optional Peer origin = 2;
+
+    optional Peer forwarder = 3;
+    optional int32 ttl = 4;
+
+    optional bool priority = 5;
+    optional bool accepted = 6;
+
+    optional int32 shuffle_id = 10;
+    repeated Peer exchange = 11;
+}
+
+//message Disconnect {
+//	required Peer peer = 1;
+//}
+//
+//message Join {
+//	required Peer peer = 1;
+//}
+//
+//message ForwardJoin {
+//	required Peer joining = 1;
+//	required Peer forwarder = 2;
+//	required int32 ttl = 3;
+//}
+//
+//message Neighbour {
+//    required Peer peer = 1;
+//    required bool priority = 2;
+//}
+//
+//message NeighbourReply {
+//    required Peer peer = 1;
+//    required bool accepted = 2;
+//}
+//
+//message Shuffle {
+//    required Peer origin = 1;
+//    required int32 id = 2;
+//    required int32 ttl = 3;
+//    repeated Peer exchange = 4;
+//}
+//
+//message ShuffleReply {
+//    required int32 id = 1;
+//    repeated Peer exchange = 2;
+//}
